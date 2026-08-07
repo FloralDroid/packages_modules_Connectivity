@@ -1335,19 +1335,30 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     public ConnectivityService(Context context) {
+        this(context, () -> null);
+    }
+
+    ConnectivityService(Context context,
+            FloralWifiPresentation.BinderLookup floralWifiBinderLookup) {
         this(context, getDnsResolver(context), new IpConnectivityLog(),
                 INetd.Stub.asInterface((IBinder) context.getSystemService(Context.NETD_SERVICE)),
-                new Dependencies());
+                new Dependencies(), floralWifiBinderLookup);
     }
 
     @VisibleForTesting
     protected ConnectivityService(Context context, IDnsResolver dnsresolver,
             IpConnectivityLog logger, INetd netd, Dependencies deps) {
+        this(context, dnsresolver, logger, netd, deps, () -> null);
+    }
+
+    private ConnectivityService(Context context, IDnsResolver dnsresolver,
+            IpConnectivityLog logger, INetd netd, Dependencies deps,
+            FloralWifiPresentation.BinderLookup floralWifiBinderLookup) {
         if (DBG) log("ConnectivityService starting up");
 
         mDeps = Objects.requireNonNull(deps, "missing Dependencies");
         mSystemProperties = mDeps.getSystemProperties();
-        mFloralWifiPresentation = new FloralWifiPresentation(mSystemProperties);
+        mFloralWifiPresentation = new FloralWifiPresentation(floralWifiBinderLookup);
         mNetIdManager = mDeps.makeNetIdManager();
         mContext = Objects.requireNonNull(context, "missing Context");
         mResources = deps.getResources(mContext);

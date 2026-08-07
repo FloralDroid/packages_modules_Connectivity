@@ -28,8 +28,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.when;
 
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
@@ -39,40 +37,29 @@ import android.os.Process;
 
 import androidx.test.filters.SmallTest;
 
-import com.android.server.connectivity.MockableSystemProperties;
+import floral.device.wifi.WifiSnapshot;
 
-import org.junit.Before;
 import org.junit.Test;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
 
 /** Unit tests for {@link FloralWifiPresentation}. */
 @SmallTest
 public class FloralWifiPresentationTest {
     private static final int APP_UID = Process.FIRST_APPLICATION_UID;
 
-    @Mock private MockableSystemProperties mSystemProperties;
-
-    @Before
-    public void setUp() {
-        MockitoAnnotations.initMocks(this);
-        when(mSystemProperties.get(anyString())).thenReturn("");
-    }
-
     @Test
     public void disabledPresentationLeavesCapabilitiesUnchanged() {
+        FakeStateProvider provider = new FakeStateProvider();
         NetworkCapabilities ethernet = createCapabilities(TRANSPORT_ETHERNET);
-        FloralWifiPresentation presentation = new FloralWifiPresentation(mSystemProperties);
+        FloralWifiPresentation presentation = new FloralWifiPresentation(provider);
 
         assertFalse(presentation.isEnabledForUid(APP_UID));
         assertSame(ethernet, presentation.apply(ethernet, APP_UID));
     }
 
     @Test
-    public void enabledPresentationAddsUsableWifiViewWithoutChangingSource() {
-        when(mSystemProperties.getBoolean("ro.boot.floral_wifi_simulation", false))
-                .thenReturn(true);
-        FloralWifiPresentation presentation = new FloralWifiPresentation(mSystemProperties);
+    public void connectedPresentationAddsUsableWifiViewWithoutChangingSource() {
+        FloralWifiPresentation presentation =
+                new FloralWifiPresentation(new FakeStateProvider(connectedSnapshot()));
         NetworkCapabilities ethernet = createCapabilities(TRANSPORT_ETHERNET);
         ethernet.addCapability(NET_CAPABILITY_PARTIAL_CONNECTIVITY);
         ethernet.addCapability(NET_CAPABILITY_CAPTIVE_PORTAL);
@@ -92,31 +79,38 @@ public class FloralWifiPresentationTest {
     }
 
     @Test
-    public void enabledPresentationDoesNotDecorateNonEthernetNetwork() {
-        when(mSystemProperties.getBoolean("ro.boot.floral_wifi_simulation", false))
-                .thenReturn(true);
-        FloralWifiPresentation presentation = new FloralWifiPresentation(mSystemProperties);
+    public void connectedPresentationDoesNotDecorateNonEthernetNetwork() {
+        FloralWifiPresentation presentation =
+                new FloralWifiPresentation(new FakeStateProvider(connectedSnapshot()));
         NetworkCapabilities cellular = createCapabilities(TRANSPORT_CELLULAR);
 
         assertSame(cellular, presentation.apply(cellular, APP_UID));
     }
 
     @Test
-    public void enabledPresentationDoesNotDecorateSystemUid() {
-        when(mSystemProperties.getBoolean("ro.boot.floral_wifi_simulation", false))
-                .thenReturn(true);
-        FloralWifiPresentation presentation = new FloralWifiPresentation(mSystemProperties);
+    public void connectedPresentationDecoratesSystemUidForSystemUi() {
+        FloralWifiPresentation presentation =
+                new FloralWifiPresentation(new FakeStateProvider(connectedSnapshot()));
         NetworkCapabilities ethernet = createCapabilities(TRANSPORT_ETHERNET);
 
-        assertFalse(presentation.isEnabledForUid(Process.SYSTEM_UID));
-        assertSame(ethernet, presentation.apply(ethernet, Process.SYSTEM_UID));
+        assertTrue(presentation.isEnabledForUid(Process.SYSTEM_UID));
+        assertTrue(presentation.apply(ethernet, Process.SYSTEM_UID).hasTransport(TRANSPORT_WIFI));
+    }
+
+    @Test
+    public void connectedPresentationDoesNotDecorateShellUid() {
+        FloralWifiPresentation presentation =
+                new FloralWifiPresentation(new FakeStateProvider(connectedSnapshot()));
+        NetworkCapabilities ethernet = createCapabilities(TRANSPORT_ETHERNET);
+
+        assertFalse(presentation.isEnabledForUid(Process.SHELL_UID));
+        assertSame(ethernet, presentation.apply(ethernet, Process.SHELL_UID));
     }
 
     @Test
     public void legacyCopyReportsWifiAndKeepsOriginalType() {
-        when(mSystemProperties.getBoolean("ro.boot.floral_wifi_simulation", false))
-                .thenReturn(true);
-        FloralWifiPresentation presentation = new FloralWifiPresentation(mSystemProperties);
+        FloralWifiPresentation presentation =
+                new FloralWifiPresentation(new FakeStateProvider(connectedSnapshot()));
         NetworkInfo ethernetInfo = new NetworkInfo(
                 ConnectivityManager.TYPE_ETHERNET, 0, "ETHERNET", "");
         ethernetInfo.setIsAvailable(true);
@@ -133,10 +127,41 @@ public class FloralWifiPresentationTest {
         assertEquals(ConnectivityManager.TYPE_ETHERNET, ethernetInfo.getType());
     }
 
+    private static WifiSnapshot connectedSnapshot() {
+        WifiSnapshot snapshot = new WifiSnapshot();
+        snapshot.enabled = true;
+        snapshot.connectedAccessPointId = 1;
+        snapshot.ssid = "FloralDroid";
+        snapshot.bssid = "02:00:00:12:00:01";
+        snapshot.security = 1;
+        snapshot.rssiDbm = -48;
+        snapshot.frequencyMhz = 5180;
+        snapshot.channelWidthMhz = 80;
+        snapshot.linkSpeedMbps = 866;
+        return snapshot;
+    }
+
     private static NetworkCapabilities createCapabilities(int transport) {
         return new NetworkCapabilities.Builder()
                 .addTransportType(transport)
                 .addCapability(NET_CAPABILITY_INTERNET)
                 .build();
+    }
+
+    private static final class FakeStateProvider implements FloralWifiPresentation.StateProvider {
+        private final WifiSnapshot mSnapshot;
+
+        FakeStateProvider() {
+            this(null);
+        }
+
+        FakeStateProvider(WifiSnapshot snapshot) {
+            mSnapshot = snapshot;
+        }
+
+        @Override
+        public WifiSnapshot getSnapshot() {
+            return mSnapshot;
+        }
     }
 }

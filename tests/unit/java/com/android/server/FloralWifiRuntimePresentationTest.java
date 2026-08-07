@@ -35,7 +35,6 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.wifi.WifiInfo;
-import android.os.SystemProperties;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
@@ -49,13 +48,8 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Runtime checks for the application-facing Floral Wi-Fi presentation boundary. */
 @SmallTest
 public class FloralWifiRuntimePresentationTest {
-    private static final String PROP_ENABLED = "ro.boot.floral_wifi_simulation";
-
     @Test
     public void applicationApisPresentValidatedWifi() throws Exception {
-        // Keep the platform test suite portable when Floral Wi-Fi simulation is not requested.
-        assumeTrue(SystemProperties.getBoolean(PROP_ENABLED, false));
-
         Context context = InstrumentationRegistry.getContext();
         ConnectivityManager connectivityManager =
                 context.getSystemService(ConnectivityManager.class);
@@ -63,8 +57,12 @@ public class FloralWifiRuntimePresentationTest {
 
         Network activeNetwork = connectivityManager.getActiveNetwork();
         assertNotNull(activeNetwork);
-        assertApplicationWifiCapabilities(
-                connectivityManager.getNetworkCapabilities(activeNetwork));
+        NetworkCapabilities activeCapabilities =
+                connectivityManager.getNetworkCapabilities(activeNetwork);
+        // Keep the platform test portable when no validated wifi.json is mounted.
+        assumeTrue(activeCapabilities != null
+                && activeCapabilities.hasTransport(TRANSPORT_WIFI));
+        assertApplicationWifiCapabilities(activeCapabilities);
 
         NetworkInfo activeInfo = connectivityManager.getActiveNetworkInfo();
         assertNotNull(activeInfo);

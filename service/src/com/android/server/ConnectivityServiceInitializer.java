@@ -25,6 +25,8 @@ import android.util.Log;
  */
 public final class ConnectivityServiceInitializer extends SystemService {
     private static final String TAG = ConnectivityServiceInitializer.class.getSimpleName();
+    private static final String FLORAL_WIFI_STATE_INSTANCE =
+            "floral.device.wifi.IWifiState/default";
     private final ConnectivityService mConnectivity;
 
     public ConnectivityServiceInitializer(Context context) {
@@ -32,7 +34,8 @@ public final class ConnectivityServiceInitializer extends SystemService {
         // Load JNI libraries used by ConnectivityService and its dependencies
         System.loadLibrary("service-connectivity");
         // TODO: Define formal APIs to get the needed services.
-        mConnectivity = new ConnectivityService(context);
+        mConnectivity = new ConnectivityService(context,
+                () -> getBinderService(FLORAL_WIFI_STATE_INSTANCE));
     }
 
     @Override
