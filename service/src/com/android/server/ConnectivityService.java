@@ -677,6 +677,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
      */
     private static final int EVENT_SET_TEST_ALLOW_BAD_WIFI_UNTIL = 55;
 
+    // Refreshes entropy-driven Floral Wi-Fi state without creating another netId or interface.
+    private static final int EVENT_REFRESH_FLORAL_WIFI_CAPABILITIES = 56;
+    private static final long FLORAL_WIFI_REFRESH_INTERVAL_MS = 1_000;
+
     /**
      * Argument for {@link #EVENT_PROVISIONING_NOTIFICATION} to indicate that the notification
      * should be shown.
@@ -2894,6 +2898,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // Create network requests for always-on networks.
         mHandler.sendMessage(mHandler.obtainMessage(EVENT_CONFIGURE_ALWAYS_ON_NETWORKS));
 
+        mHandler.sendEmptyMessage(EVENT_REFRESH_FLORAL_WIFI_CAPABILITIES);
+
         // Update mobile data preference if necessary.
         // Note that empty uid list can be skip here only because no uid rules applied before system
         // ready. Normally, the empty uid list means to clear the uids rules on netd.
@@ -3316,7 +3322,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         networkCapabilities.restrictCapabilitesForTestNetwork(nai.creatorUid);
                     }
                     processCapabilitiesFromAgent(nai, networkCapabilities);
-                    updateCapabilities(nai.getCurrentScore(), nai, networkCapabilities);
+                    updateCapabilities(nai.getCurrentScore(), nai,
+                            mFloralWifiPresentation.applyToNetworkAgent(networkCapabilities));
                     break;
                 }
                 case NetworkAgent.EVENT_NETWORK_PROPERTIES_CHANGED: {
@@ -5000,11 +5007,33 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 case EVENT_MOBILE_DATA_PREFERRED_UIDS_CHANGED:
                     handleMobileDataPreferredUidsChanged();
                     break;
-                case EVENT_SET_TEST_ALLOW_BAD_WIFI_UNTIL:
+                case EVENT_SET_TEST_ALLOW_BAD_WIFI_UNTIL: {
                     final long timeMs = ((Long) msg.obj).longValue();
                     mMultinetworkPolicyTracker.setTestAllowBadWifiUntil(timeMs);
                     break;
+                }
+                case EVENT_REFRESH_FLORAL_WIFI_CAPABILITIES:
+                    handleRefreshFloralWifiCapabilities();
+                    sendEmptyMessageDelayed(EVENT_REFRESH_FLORAL_WIFI_CAPABILITIES,
+                            FLORAL_WIFI_REFRESH_INTERVAL_MS);
+                    break;
             }
+        }
+    }
+
+    private void handleRefreshFloralWifiCapabilities() {
+        ensureRunningOnConnectivityServiceThread();
+        for (NetworkAgentInfo nai : mNetworkAgentInfos) {
+            final NetworkCapabilities declared = nai.declaredCapabilities;
+            if (declared == null || !declared.hasTransport(TRANSPORT_ETHERNET)
+                    || declared.hasTransport(TRANSPORT_WIFI)
+                    || declared.hasTransport(TRANSPORT_VPN)) {
+                continue;
+            }
+            // Rebuild from the agent-declared Ethernet capabilities so disconnecting simulated
+            // Wi-Fi removes only the presentation and keeps the original network intact.
+            updateCapabilities(nai.getCurrentScore(), nai,
+                    mFloralWifiPresentation.applyToNetworkAgent(declared));
         }
     }
 
@@ -6812,7 +6841,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         // Make sure the LinkProperties and NetworkCapabilities reflect what the agent info says.
         processCapabilitiesFromAgent(nai, nc);
-        nai.getAndSetNetworkCapabilities(mixInCapabilities(nai, nc));
+        nai.getAndSetNetworkCapabilities(mixInCapabilities(nai,
+                mFloralWifiPresentation.applyToNetworkAgent(nc)));
         processLinkPropertiesFromAgent(nai, nai.linkProperties);
 
         final String extraInfo = networkInfo.getExtraInfo();

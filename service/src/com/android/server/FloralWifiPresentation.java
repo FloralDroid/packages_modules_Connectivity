@@ -20,6 +20,7 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVITY;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
 import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
+import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 
 import android.annotation.NonNull;
@@ -43,8 +44,9 @@ import java.nio.charset.StandardCharsets;
 /**
  * Creates application-facing Wi-Fi views backed by redroid's existing Ethernet network.
  *
- * <p>Only outbound copies are decorated. ConnectivityService's internal NetworkAgent,
- * validation state, score, LinkProperties, interface, and routes remain unchanged.</p>
+ * <p>The existing Ethernet NetworkAgent can also receive a Wi-Fi transport view so Wi-Fi-only
+ * requests match the same network. Its netId, LinkProperties, interface, and routes remain
+ * unchanged.</p>
  */
 final class FloralWifiPresentation {
     private static final String TAG = "FloralWifiPresentation";
@@ -110,26 +112,39 @@ final class FloralWifiPresentation {
         return getConnectedSnapshot(uid) != null;
     }
 
-    /** Decorates an outbound copy without changing ConnectivityService's internal capabilities. */
+    /** Decorates an outbound copy without changing ConnectivityService's managed validation. */
     @NonNull
     NetworkCapabilities apply(@NonNull NetworkCapabilities source, int uid) {
         WifiSnapshot snapshot = getConnectedSnapshot(uid);
-        if (snapshot == null || !source.hasTransport(TRANSPORT_ETHERNET)
-                || source.hasTransport(TRANSPORT_WIFI)) {
+        if (snapshot == null || !source.hasTransport(TRANSPORT_ETHERNET)) {
             return source;
         }
 
-        NetworkCapabilities result = new NetworkCapabilities(source);
-        result.addTransportType(TRANSPORT_WIFI);
-        if (result.getTransportInfo() == null) {
-            result.setTransportInfo(createWifiInfo(snapshot));
-        }
+        NetworkCapabilities result = addWifiView(source, snapshot);
         // The underlying Ethernet connection is usable even when host-side probe endpoints are
         // inaccessible. This affects only the copy observed by the requesting application.
         result.addCapability(NET_CAPABILITY_VALIDATED);
         result.removeCapability(NET_CAPABILITY_PARTIAL_CONNECTIVITY);
         result.removeCapability(NET_CAPABILITY_CAPTIVE_PORTAL);
         return result;
+    }
+
+    /**
+     * Adds Wi-Fi request matching to the existing Ethernet NetworkAgent.
+     *
+     * <p>Callers must pass the capabilities declared by the NetworkAgent, rather than a previously
+     * decorated result. This lets a disconnected snapshot restore the original Ethernet-only
+     * capabilities without changing the network's identity or routing.</p>
+     */
+    @NonNull
+    NetworkCapabilities applyToNetworkAgent(@NonNull NetworkCapabilities source) {
+        WifiSnapshot snapshot = getConnectedSnapshot();
+        if (snapshot == null || !source.hasTransport(TRANSPORT_ETHERNET)
+                || source.hasTransport(TRANSPORT_WIFI)
+                || source.hasTransport(TRANSPORT_VPN)) {
+            return source;
+        }
+        return addWifiView(source, snapshot);
     }
 
     /** Converts only the copy returned to legacy callers; internal NetworkInfo stays Ethernet. */
@@ -155,9 +170,29 @@ final class FloralWifiPresentation {
         int appId = UserHandle.getAppId(uid);
         // SystemUI and Settings share the system UID and need the same outbound Wi-Fi view as apps.
         if (appId != Process.SYSTEM_UID && appId < Process.FIRST_APPLICATION_UID) return null;
+        return getConnectedSnapshot();
+    }
+
+    @Nullable
+    private WifiSnapshot getConnectedSnapshot() {
         WifiSnapshot snapshot = mStateProvider.getSnapshot();
         return snapshot != null && snapshot.enabled && snapshot.connectedAccessPointId != 0
                 ? snapshot : null;
+    }
+
+    @NonNull
+    private static NetworkCapabilities addWifiView(
+            @NonNull NetworkCapabilities source, @NonNull WifiSnapshot snapshot) {
+        NetworkCapabilities result = new NetworkCapabilities(source);
+        result.addTransportType(TRANSPORT_WIFI);
+        // Ethernet normally has no TransportInfo. Preserve an unusual non-Wi-Fi value rather than
+        // discarding information owned by the original NetworkAgent.
+        if (result.getTransportInfo() == null || result.getTransportInfo() instanceof WifiInfo) {
+            result.setTransportInfo(createWifiInfo(snapshot));
+        }
+        result.setSignalStrength(snapshot.rssiDbm);
+        result.setSSID(snapshot.ssid);
+        return result;
     }
 
     @NonNull

@@ -34,6 +34,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
+import android.net.NetworkRequest;
 import android.net.wifi.WifiInfo;
 
 import androidx.test.InstrumentationRegistry;
@@ -88,6 +89,30 @@ public class FloralWifiRuntimePresentationTest {
             assertApplicationWifiCapabilities(callbackCapabilities.get());
         } finally {
             connectivityManager.unregisterNetworkCallback(callback);
+        }
+
+        // A Wi-Fi-specific request must resolve to the same netId instead of creating another
+        // physical network for the Ethernet interface.
+        CountDownLatch wifiCallbackReceived = new CountDownLatch(1);
+        AtomicReference<Network> wifiNetwork = new AtomicReference<>();
+        ConnectivityManager.NetworkCallback wifiCallback =
+                new ConnectivityManager.NetworkCallback() {
+                    @Override
+                    public void onAvailable(Network network) {
+                        wifiNetwork.set(network);
+                        wifiCallbackReceived.countDown();
+                    }
+                };
+        NetworkRequest wifiRequest = new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_WIFI)
+                .build();
+        connectivityManager.registerNetworkCallback(wifiRequest, wifiCallback);
+        try {
+            assertTrue("Timed out waiting for the Wi-Fi network callback",
+                    wifiCallbackReceived.await(5, TimeUnit.SECONDS));
+            assertEquals(activeNetwork, wifiNetwork.get());
+        } finally {
+            connectivityManager.unregisterNetworkCallback(wifiCallback);
         }
     }
 

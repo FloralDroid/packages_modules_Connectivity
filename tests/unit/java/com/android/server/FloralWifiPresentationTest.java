@@ -22,6 +22,7 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVIT
 import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
+import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 
 import static org.junit.Assert.assertEquals;
@@ -69,6 +70,8 @@ public class FloralWifiPresentationTest {
         assertTrue(result.hasTransport(TRANSPORT_ETHERNET));
         assertTrue(result.hasTransport(TRANSPORT_WIFI));
         assertTrue(result.hasCapability(NET_CAPABILITY_INTERNET));
+        assertEquals(-48, result.getSignalStrength());
+        assertEquals("FloralDroid", result.getSsid());
         WifiInfo info = (WifiInfo) result.getTransportInfo();
         assertEquals("\"FloralDroid\"", info.getSSID());
         assertTrue(result.hasCapability(NET_CAPABILITY_VALIDATED));
@@ -76,6 +79,62 @@ public class FloralWifiPresentationTest {
         assertFalse(result.hasCapability(NET_CAPABILITY_CAPTIVE_PORTAL));
         assertFalse(ethernet.hasTransport(TRANSPORT_WIFI));
         assertFalse(ethernet.hasCapability(NET_CAPABILITY_VALIDATED));
+    }
+
+    @Test
+    public void networkAgentWifiViewSatisfiesWifiRequestWithoutChangingEthernet() {
+        FloralWifiPresentation presentation =
+                new FloralWifiPresentation(new FakeStateProvider(connectedSnapshot()));
+        NetworkCapabilities ethernet = createCapabilities(TRANSPORT_ETHERNET);
+        NetworkCapabilities wifiRequest = new NetworkCapabilities.Builder()
+                .addTransportType(TRANSPORT_WIFI)
+                .build();
+
+        NetworkCapabilities result = presentation.applyToNetworkAgent(ethernet);
+
+        assertTrue(wifiRequest.satisfiedByNetworkCapabilities(result));
+        assertTrue(result.hasTransport(TRANSPORT_ETHERNET));
+        assertTrue(result.hasTransport(TRANSPORT_WIFI));
+        assertFalse(ethernet.hasTransport(TRANSPORT_WIFI));
+    }
+
+    @Test
+    public void networkAgentWifiViewUsesLatestSignalStrength() {
+        FakeStateProvider provider = new FakeStateProvider(connectedSnapshot());
+        FloralWifiPresentation presentation = new FloralWifiPresentation(provider);
+        NetworkCapabilities ethernet = createCapabilities(TRANSPORT_ETHERNET);
+
+        assertEquals(-48, presentation.applyToNetworkAgent(ethernet).getSignalStrength());
+        WifiSnapshot changed = connectedSnapshot();
+        changed.rssiDbm = -72;
+        provider.setSnapshot(changed);
+        assertEquals(-72, presentation.applyToNetworkAgent(ethernet).getSignalStrength());
+    }
+
+    @Test
+    public void disconnectedNetworkAgentViewRestoresDeclaredEthernet() {
+        FakeStateProvider provider = new FakeStateProvider(connectedSnapshot());
+        FloralWifiPresentation presentation = new FloralWifiPresentation(provider);
+        NetworkCapabilities ethernet = createCapabilities(TRANSPORT_ETHERNET);
+
+        assertTrue(presentation.applyToNetworkAgent(ethernet).hasTransport(TRANSPORT_WIFI));
+        WifiSnapshot disconnected = connectedSnapshot();
+        disconnected.connectedAccessPointId = 0;
+        provider.setSnapshot(disconnected);
+
+        assertSame(ethernet, presentation.applyToNetworkAgent(ethernet));
+        assertFalse(ethernet.hasTransport(TRANSPORT_WIFI));
+    }
+
+    @Test
+    public void networkAgentWifiViewLeavesVpnCapabilitiesUntouched() {
+        FloralWifiPresentation presentation =
+                new FloralWifiPresentation(new FakeStateProvider(connectedSnapshot()));
+        NetworkCapabilities vpn = createCapabilities(TRANSPORT_VPN);
+        vpn.addTransportType(TRANSPORT_ETHERNET);
+
+        assertSame(vpn, presentation.applyToNetworkAgent(vpn));
+        assertFalse(vpn.hasTransport(TRANSPORT_WIFI));
     }
 
     @Test
@@ -149,13 +208,17 @@ public class FloralWifiPresentationTest {
     }
 
     private static final class FakeStateProvider implements FloralWifiPresentation.StateProvider {
-        private final WifiSnapshot mSnapshot;
+        private WifiSnapshot mSnapshot;
 
         FakeStateProvider() {
             this(null);
         }
 
         FakeStateProvider(WifiSnapshot snapshot) {
+            mSnapshot = snapshot;
+        }
+
+        void setSnapshot(WifiSnapshot snapshot) {
             mSnapshot = snapshot;
         }
 
