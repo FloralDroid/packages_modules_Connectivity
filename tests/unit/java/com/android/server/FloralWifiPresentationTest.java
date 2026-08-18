@@ -16,6 +16,8 @@
 
 package com.android.server;
 
+import static android.net.INetworkMonitor.NETWORK_VALIDATION_RESULT_PARTIAL;
+import static android.net.INetworkMonitor.NETWORK_VALIDATION_RESULT_VALID;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVITY;
@@ -112,6 +114,33 @@ public class FloralWifiPresentationTest {
     }
 
     @Test
+    public void networkAgentWifiViewReportsValidInsteadOfPartialConnectivity() {
+        FloralWifiPresentation presentation =
+                new FloralWifiPresentation(new FakeStateProvider(connectedSnapshot()));
+        NetworkCapabilities ethernet = createCapabilities(TRANSPORT_ETHERNET);
+
+        int result = presentation.applyToValidationResult(
+                ethernet, NETWORK_VALIDATION_RESULT_PARTIAL);
+
+        assertTrue((result & NETWORK_VALIDATION_RESULT_VALID) != 0);
+        assertFalse((result & NETWORK_VALIDATION_RESULT_PARTIAL) != 0);
+        assertTrue(presentation.isNetworkAgentWifiViewActive(ethernet));
+    }
+
+    @Test
+    public void disconnectedWifiViewLeavesEthernetValidationUnchanged() {
+        FloralWifiPresentation presentation =
+                new FloralWifiPresentation(new FakeStateProvider());
+        NetworkCapabilities ethernet = createCapabilities(TRANSPORT_ETHERNET);
+
+        int result = presentation.applyToValidationResult(
+                ethernet, NETWORK_VALIDATION_RESULT_PARTIAL);
+
+        assertEquals(NETWORK_VALIDATION_RESULT_PARTIAL, result);
+        assertFalse(presentation.isNetworkAgentWifiViewActive(ethernet));
+    }
+
+    @Test
     public void disconnectedNetworkAgentViewRestoresDeclaredEthernet() {
         FakeStateProvider provider = new FakeStateProvider(connectedSnapshot());
         FloralWifiPresentation presentation = new FloralWifiPresentation(provider);
@@ -135,6 +164,10 @@ public class FloralWifiPresentationTest {
 
         assertSame(vpn, presentation.applyToNetworkAgent(vpn));
         assertFalse(vpn.hasTransport(TRANSPORT_WIFI));
+        assertEquals(NETWORK_VALIDATION_RESULT_PARTIAL,
+                presentation.applyToValidationResult(
+                        vpn, NETWORK_VALIDATION_RESULT_PARTIAL));
+        assertFalse(presentation.isNetworkAgentWifiViewActive(vpn));
     }
 
     @Test

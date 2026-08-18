@@ -3446,14 +3446,20 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(results.mNetId);
                     if (nai == null) break;
 
-                    handleNetworkTested(nai, results.mTestResult,
+                    final int testResult = mFloralWifiPresentation.applyToValidationResult(
+                            nai.declaredCapabilities, results.mTestResult);
+                    handleNetworkTested(nai, testResult,
                             (results.mRedirectUrl == null) ? "" : results.mRedirectUrl);
                     break;
                 }
                 case EVENT_PROVISIONING_NOTIFICATION: {
                     final int netId = msg.arg2;
-                    final boolean visible = toBool(msg.arg1);
                     final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(netId);
+                    // Captive-portal controls must never reject the Ethernet NetworkAgent used by
+                    // the simulated Wi-Fi view.
+                    final boolean visible = toBool(msg.arg1) && (nai == null
+                            || !mFloralWifiPresentation.isNetworkAgentWifiViewActive(
+                                    nai.declaredCapabilities));
                     // If captive portal status has changed, update capabilities or disconnect.
                     if (nai != null && (visible != nai.lastCaptivePortalDetected)) {
                         nai.lastCaptivePortalDetected = visible;

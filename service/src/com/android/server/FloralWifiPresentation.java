@@ -16,6 +16,8 @@
 
 package com.android.server;
 
+import static android.net.INetworkMonitor.NETWORK_VALIDATION_RESULT_PARTIAL;
+import static android.net.INetworkMonitor.NETWORK_VALIDATION_RESULT_VALID;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVITY;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
@@ -139,12 +141,30 @@ final class FloralWifiPresentation {
     @NonNull
     NetworkCapabilities applyToNetworkAgent(@NonNull NetworkCapabilities source) {
         WifiSnapshot snapshot = getConnectedSnapshot();
-        if (snapshot == null || !source.hasTransport(TRANSPORT_ETHERNET)
-                || source.hasTransport(TRANSPORT_WIFI)
-                || source.hasTransport(TRANSPORT_VPN)) {
+        if (!isNetworkAgentWifiViewActive(source, snapshot)) {
             return source;
         }
         return addWifiView(source, snapshot);
+    }
+
+    /**
+     * Keeps validation consistent with the usable Wi-Fi view returned to applications.
+     *
+     * <p>The container bridge can be usable even when Android's fixed probe endpoints are not.
+     * Reporting partial connectivity here would expose a Wi-Fi rejection flow that tears down the
+     * same Ethernet NetworkAgent carrying the container's real network.</p>
+     */
+    int applyToValidationResult(@NonNull NetworkCapabilities source, int result) {
+        if (!isNetworkAgentWifiViewActive(source, getConnectedSnapshot())) {
+            return result;
+        }
+        return (result | NETWORK_VALIDATION_RESULT_VALID)
+                & ~NETWORK_VALIDATION_RESULT_PARTIAL;
+    }
+
+    /** Returns whether captive-portal UI must stay detached from the real Ethernet network. */
+    boolean isNetworkAgentWifiViewActive(@NonNull NetworkCapabilities source) {
+        return isNetworkAgentWifiViewActive(source, getConnectedSnapshot());
     }
 
     /** Converts only the copy returned to legacy callers; internal NetworkInfo stays Ethernet. */
@@ -178,6 +198,13 @@ final class FloralWifiPresentation {
         WifiSnapshot snapshot = mStateProvider.getSnapshot();
         return snapshot != null && snapshot.enabled && snapshot.connectedAccessPointId != 0
                 ? snapshot : null;
+    }
+
+    private static boolean isNetworkAgentWifiViewActive(
+            @NonNull NetworkCapabilities source, @Nullable WifiSnapshot snapshot) {
+        return snapshot != null && source.hasTransport(TRANSPORT_ETHERNET)
+                && !source.hasTransport(TRANSPORT_WIFI)
+                && !source.hasTransport(TRANSPORT_VPN);
     }
 
     @NonNull
