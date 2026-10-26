@@ -65,6 +65,8 @@ java_library {
         "ServiceConnectivityResources",
     ],
     static_libs: [
+        // Shared VINTF contract used by the injected Floral Wi-Fi state provider.
+        "floral.device.wifi-V1-java",
         "dnsresolver_aidl_interface-V9-java",
         "modules-utils-os",
         "net-utils-device-common",

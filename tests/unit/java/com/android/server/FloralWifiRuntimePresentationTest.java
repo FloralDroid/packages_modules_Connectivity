@@ -1,0 +1,129 @@
+/*
+ * Copyright (C) 2026 The FloralDroid Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.android.server;
+
+import static android.net.NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVITY;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
+import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
+import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
+
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkInfo;
+import android.net.NetworkRequest;
+import android.net.wifi.WifiInfo;
+
+import androidx.test.InstrumentationRegistry;
+import androidx.test.filters.SmallTest;
+
+import org.junit.Test;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+/** Runtime checks for the application-facing Floral Wi-Fi presentation boundary. */
+@SmallTest
+public class FloralWifiRuntimePresentationTest {
+    @Test
+    public void applicationApisPresentValidatedWifi() throws Exception {
+        Context context = InstrumentationRegistry.getContext();
+        ConnectivityManager connectivityManager =
+                context.getSystemService(ConnectivityManager.class);
+        assertNotNull(connectivityManager);
+
+        Network activeNetwork = connectivityManager.getActiveNetwork();
+        assertNotNull(activeNetwork);
+        NetworkCapabilities activeCapabilities =
+                connectivityManager.getNetworkCapabilities(activeNetwork);
+        // Keep the platform test portable when no validated wifi.json is mounted.
+        assumeTrue(activeCapabilities != null
+                && activeCapabilities.hasTransport(TRANSPORT_WIFI));
+        assertApplicationWifiCapabilities(activeCapabilities);
+
+        NetworkInfo activeInfo = connectivityManager.getActiveNetworkInfo();
+        assertNotNull(activeInfo);
+        assertTrue(activeInfo.isConnected());
+        assertEquals(ConnectivityManager.TYPE_WIFI, activeInfo.getType());
+
+        // NetworkCallback is a separate outbound path used by modern applications.
+        CountDownLatch callbackReceived = new CountDownLatch(1);
+        AtomicReference<NetworkCapabilities> callbackCapabilities = new AtomicReference<>();
+        ConnectivityManager.NetworkCallback callback =
+                new ConnectivityManager.NetworkCallback() {
+                    @Override
+                    public void onCapabilitiesChanged(
+                            Network network, NetworkCapabilities capabilities) {
+                        callbackCapabilities.set(capabilities);
+                        callbackReceived.countDown();
+                    }
+                };
+        connectivityManager.registerDefaultNetworkCallback(callback);
+        try {
+            assertTrue("Timed out waiting for the default network callback",
+                    callbackReceived.await(5, TimeUnit.SECONDS));
+            assertApplicationWifiCapabilities(callbackCapabilities.get());
+        } finally {
+            connectivityManager.unregisterNetworkCallback(callback);
+        }
+
+        // A Wi-Fi-specific request must resolve to the same netId instead of creating another
+        // physical network for the Ethernet interface.
+        CountDownLatch wifiCallbackReceived = new CountDownLatch(1);
+        AtomicReference<Network> wifiNetwork = new AtomicReference<>();
+        ConnectivityManager.NetworkCallback wifiCallback =
+                new ConnectivityManager.NetworkCallback() {
+                    @Override
+                    public void onAvailable(Network network) {
+                        wifiNetwork.set(network);
+                        wifiCallbackReceived.countDown();
+                    }
+                };
+        NetworkRequest wifiRequest = new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_WIFI)
+                .build();
+        connectivityManager.registerNetworkCallback(wifiRequest, wifiCallback);
+        try {
+            assertTrue("Timed out waiting for the Wi-Fi network callback",
+                    wifiCallbackReceived.await(5, TimeUnit.SECONDS));
+            assertEquals(activeNetwork, wifiNetwork.get());
+        } finally {
+            connectivityManager.unregisterNetworkCallback(wifiCallback);
+        }
+    }
+
+    private static void assertApplicationWifiCapabilities(NetworkCapabilities capabilities) {
+        assertNotNull(capabilities);
+        assertTrue(capabilities.hasTransport(TRANSPORT_ETHERNET));
+        assertTrue(capabilities.hasTransport(TRANSPORT_WIFI));
+        assertTrue(capabilities.hasCapability(NET_CAPABILITY_INTERNET));
+        assertTrue(capabilities.hasCapability(NET_CAPABILITY_VALIDATED));
+        assertFalse(capabilities.hasCapability(NET_CAPABILITY_PARTIAL_CONNECTIVITY));
+        assertFalse(capabilities.hasCapability(NET_CAPABILITY_CAPTIVE_PORTAL));
+        assertTrue(capabilities.getTransportInfo() instanceof WifiInfo);
+    }
+}

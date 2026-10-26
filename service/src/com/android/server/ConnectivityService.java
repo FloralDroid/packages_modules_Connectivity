@@ -76,6 +76,7 @@ import static android.net.NetworkCapabilities.REDACT_FOR_ACCESS_FINE_LOCATION;
 import static android.net.NetworkCapabilities.REDACT_FOR_LOCAL_MAC_ADDRESS;
 import static android.net.NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
+import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
@@ -341,6 +342,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private final int mReleasePendingIntentDelayMs;
 
     private MockableSystemProperties mSystemProperties;
+    private FloralWifiPresentation mFloralWifiPresentation;
 
     @VisibleForTesting
     protected final PermissionMonitor mPermissionMonitor;
@@ -674,6 +676,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * {@code config_networkAvoidBadWifi}.
      */
     private static final int EVENT_SET_TEST_ALLOW_BAD_WIFI_UNTIL = 55;
+
+    // Refreshes entropy-driven Floral Wi-Fi state without creating another netId or interface.
+    private static final int EVENT_REFRESH_FLORAL_WIFI_CAPABILITIES = 56;
+    private static final long FLORAL_WIFI_REFRESH_INTERVAL_MS = 1_000;
 
     /**
      * Argument for {@link #EVENT_PROVISIONING_NOTIFICATION} to indicate that the notification
@@ -1333,18 +1339,30 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     public ConnectivityService(Context context) {
+        this(context, () -> null);
+    }
+
+    ConnectivityService(Context context,
+            FloralWifiPresentation.BinderLookup floralWifiBinderLookup) {
         this(context, getDnsResolver(context), new IpConnectivityLog(),
                 INetd.Stub.asInterface((IBinder) context.getSystemService(Context.NETD_SERVICE)),
-                new Dependencies());
+                new Dependencies(), floralWifiBinderLookup);
     }
 
     @VisibleForTesting
     protected ConnectivityService(Context context, IDnsResolver dnsresolver,
             IpConnectivityLog logger, INetd netd, Dependencies deps) {
+        this(context, dnsresolver, logger, netd, deps, () -> null);
+    }
+
+    private ConnectivityService(Context context, IDnsResolver dnsresolver,
+            IpConnectivityLog logger, INetd netd, Dependencies deps,
+            FloralWifiPresentation.BinderLookup floralWifiBinderLookup) {
         if (DBG) log("ConnectivityService starting up");
 
         mDeps = Objects.requireNonNull(deps, "missing Dependencies");
         mSystemProperties = mDeps.getSystemProperties();
+        mFloralWifiPresentation = new FloralWifiPresentation(floralWifiBinderLookup);
         mNetIdManager = mDeps.makeNetIdManager();
         mContext = Objects.requireNonNull(context, "missing Context");
         mResources = deps.getResources(mContext);
@@ -1774,7 +1792,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (nai == null) return null;
         final NetworkInfo networkInfo = getFilteredNetworkInfo(nai, uid, false);
         maybeLogBlockedNetworkInfo(networkInfo, uid);
-        return networkInfo;
+        return mFloralWifiPresentation.applyLegacyType(
+                networkInfo, nai.networkCapabilities, uid);
     }
 
     @Override
@@ -1811,7 +1830,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         PermissionUtils.enforceNetworkStackPermission(mContext);
         final NetworkAgentInfo nai = getNetworkAgentInfoForUid(uid);
         if (nai == null) return null;
-        return getFilteredNetworkInfo(nai, uid, ignoreBlocked);
+        final NetworkInfo networkInfo = getFilteredNetworkInfo(nai, uid, ignoreBlocked);
+        return mFloralWifiPresentation.applyLegacyType(
+                networkInfo, nai.networkCapabilities, uid);
     }
 
     /** Returns a NetworkInfo object for a network that doesn't exist. */
@@ -1846,6 +1867,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public NetworkInfo getNetworkInfo(int networkType) {
         enforceAccessPermission();
         final int uid = mDeps.getCallingUid();
+        if (mFloralWifiPresentation.isEnabledForUid(uid)
+                && networkType == ConnectivityManager.TYPE_WIFI) {
+            final NetworkAgentInfo nai = getNetworkAgentInfoForUid(uid);
+            if (nai != null && nai.networkCapabilities.hasTransport(TRANSPORT_ETHERNET)) {
+                final NetworkInfo networkInfo = getFilteredNetworkInfo(nai, uid, false);
+                return mFloralWifiPresentation.applyLegacyType(
+                        networkInfo, nai.networkCapabilities, uid);
+            }
+        }
         if (getVpnUnderlyingNetworks(uid) != null) {
             // A VPN is active, so we may need to return one of its underlying networks. This
             // information is not available in LegacyTypeTracker, so we have to get it from
@@ -1865,7 +1895,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         enforceAccessPermission();
         final NetworkAgentInfo nai = getNetworkAgentInfoForNetwork(network);
         if (nai == null) return null;
-        return getFilteredNetworkInfo(nai, uid, ignoreBlocked);
+        final NetworkInfo networkInfo = getFilteredNetworkInfo(nai, uid, ignoreBlocked);
+        return mFloralWifiPresentation.applyLegacyType(
+                networkInfo, nai.networkCapabilities, uid);
     }
 
     @Override
@@ -1885,6 +1917,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     public Network getNetworkForType(int networkType) {
         enforceAccessPermission();
+        final int uid = mDeps.getCallingUid();
+        if (mFloralWifiPresentation.isEnabledForUid(uid)
+                && networkType == ConnectivityManager.TYPE_WIFI) {
+            final NetworkAgentInfo nai = getNetworkAgentInfoForUid(uid);
+            if (nai != null && nai.networkCapabilities.hasTransport(TRANSPORT_ETHERNET)
+                    && !isNetworkWithCapabilitiesBlocked(
+                            nai.networkCapabilities, uid, false)) {
+                return nai.network;
+            }
+        }
         if (!mLegacyTypeTracker.isTypeSupported(networkType)) {
             return null;
         }
@@ -1892,7 +1934,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (nai == null) {
             return null;
         }
-        final int uid = mDeps.getCallingUid();
         if (isNetworkWithCapabilitiesBlocked(nai.networkCapabilities, uid, false)) {
             return null;
         }
@@ -2039,12 +2080,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     public NetworkCapabilities getNetworkCapabilities(Network network, String callingPackageName,
             @Nullable String callingAttributionTag) {
-        mAppOpsManager.checkPackage(mDeps.getCallingUid(), callingPackageName);
+        final int callingUid = mDeps.getCallingUid();
+        mAppOpsManager.checkPackage(callingUid, callingPackageName);
         enforceAccessPermission();
+        final NetworkCapabilities capabilities = getNetworkCapabilitiesInternal(network);
+        final NetworkCapabilities presentedCapabilities = capabilities == null
+                ? null : mFloralWifiPresentation.apply(capabilities, callingUid);
         return createWithLocationInfoSanitizedIfNecessaryWhenParceled(
-                getNetworkCapabilitiesInternal(network),
+                presentedCapabilities,
                 false /* includeLocationSensitiveInfo */,
-                getCallingPid(), mDeps.getCallingUid(), callingPackageName, callingAttributionTag);
+                getCallingPid(), callingUid, callingPackageName, callingAttributionTag);
     }
 
     @VisibleForTesting
@@ -2853,6 +2898,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // Create network requests for always-on networks.
         mHandler.sendMessage(mHandler.obtainMessage(EVENT_CONFIGURE_ALWAYS_ON_NETWORKS));
 
+        mHandler.sendEmptyMessage(EVENT_REFRESH_FLORAL_WIFI_CAPABILITIES);
+
         // Update mobile data preference if necessary.
         // Note that empty uid list can be skip here only because no uid rules applied before system
         // ready. Normally, the empty uid list means to clear the uids rules on netd.
@@ -3275,7 +3322,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         networkCapabilities.restrictCapabilitesForTestNetwork(nai.creatorUid);
                     }
                     processCapabilitiesFromAgent(nai, networkCapabilities);
-                    updateCapabilities(nai.getCurrentScore(), nai, networkCapabilities);
+                    updateCapabilities(nai.getCurrentScore(), nai,
+                            mFloralWifiPresentation.applyToNetworkAgent(networkCapabilities));
                     break;
                 }
                 case NetworkAgent.EVENT_NETWORK_PROPERTIES_CHANGED: {
@@ -3398,14 +3446,20 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(results.mNetId);
                     if (nai == null) break;
 
-                    handleNetworkTested(nai, results.mTestResult,
+                    final int testResult = mFloralWifiPresentation.applyToValidationResult(
+                            nai.declaredCapabilities, results.mTestResult);
+                    handleNetworkTested(nai, testResult,
                             (results.mRedirectUrl == null) ? "" : results.mRedirectUrl);
                     break;
                 }
                 case EVENT_PROVISIONING_NOTIFICATION: {
                     final int netId = msg.arg2;
-                    final boolean visible = toBool(msg.arg1);
                     final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(netId);
+                    // Captive-portal controls must never reject the Ethernet NetworkAgent used by
+                    // the simulated Wi-Fi view.
+                    final boolean visible = toBool(msg.arg1) && (nai == null
+                            || !mFloralWifiPresentation.isNetworkAgentWifiViewActive(
+                                    nai.declaredCapabilities));
                     // If captive portal status has changed, update capabilities or disconnect.
                     if (nai != null && (visible != nai.lastCaptivePortalDetected)) {
                         nai.lastCaptivePortalDetected = visible;
@@ -4959,11 +5013,33 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 case EVENT_MOBILE_DATA_PREFERRED_UIDS_CHANGED:
                     handleMobileDataPreferredUidsChanged();
                     break;
-                case EVENT_SET_TEST_ALLOW_BAD_WIFI_UNTIL:
+                case EVENT_SET_TEST_ALLOW_BAD_WIFI_UNTIL: {
                     final long timeMs = ((Long) msg.obj).longValue();
                     mMultinetworkPolicyTracker.setTestAllowBadWifiUntil(timeMs);
                     break;
+                }
+                case EVENT_REFRESH_FLORAL_WIFI_CAPABILITIES:
+                    handleRefreshFloralWifiCapabilities();
+                    sendEmptyMessageDelayed(EVENT_REFRESH_FLORAL_WIFI_CAPABILITIES,
+                            FLORAL_WIFI_REFRESH_INTERVAL_MS);
+                    break;
             }
+        }
+    }
+
+    private void handleRefreshFloralWifiCapabilities() {
+        ensureRunningOnConnectivityServiceThread();
+        for (NetworkAgentInfo nai : mNetworkAgentInfos) {
+            final NetworkCapabilities declared = nai.declaredCapabilities;
+            if (declared == null || !declared.hasTransport(TRANSPORT_ETHERNET)
+                    || declared.hasTransport(TRANSPORT_WIFI)
+                    || declared.hasTransport(TRANSPORT_VPN)) {
+                continue;
+            }
+            // Rebuild from the agent-declared Ethernet capabilities so disconnecting simulated
+            // Wi-Fi removes only the presentation and keeps the original network intact.
+            updateCapabilities(nai.getCurrentScore(), nai,
+                    mFloralWifiPresentation.applyToNetworkAgent(declared));
         }
     }
 
@@ -6771,7 +6847,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         // Make sure the LinkProperties and NetworkCapabilities reflect what the agent info says.
         processCapabilitiesFromAgent(nai, nc);
-        nai.getAndSetNetworkCapabilities(mixInCapabilities(nai, nc));
+        nai.getAndSetNetworkCapabilities(mixInCapabilities(nai,
+                mFloralWifiPresentation.applyToNetworkAgent(nc)));
         processLinkPropertiesFromAgent(nai, nai.linkProperties);
 
         final String extraInfo = networkInfo.getExtraInfo();
@@ -7721,10 +7798,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 final NetworkCapabilities nc =
                         networkCapabilitiesRestrictedForCallerPermissions(
                                 networkAgent.networkCapabilities, nri.mPid, nri.mUid);
+                final NetworkCapabilities presentedNc = mFloralWifiPresentation.apply(nc, nri.mUid);
                 putParcelable(
                         bundle,
                         createWithLocationInfoSanitizedIfNecessaryWhenParceled(
-                                nc, includeLocationSensitiveInfo, nri.mPid, nri.mUid,
+                                presentedNc, includeLocationSensitiveInfo, nri.mPid, nri.mUid,
                                 nrForCallback.getRequestorPackageName(),
                                 nri.mCallingAttributionTag));
                 putParcelable(bundle, linkPropertiesRestrictedForCallerPermissions(
@@ -7742,10 +7820,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 final NetworkCapabilities netCap =
                         networkCapabilitiesRestrictedForCallerPermissions(
                                 networkAgent.networkCapabilities, nri.mPid, nri.mUid);
+                final NetworkCapabilities presentedNc =
+                        mFloralWifiPresentation.apply(netCap, nri.mUid);
                 putParcelable(
                         bundle,
                         createWithLocationInfoSanitizedIfNecessaryWhenParceled(
-                                netCap, includeLocationSensitiveInfo, nri.mPid, nri.mUid,
+                                presentedNc, includeLocationSensitiveInfo, nri.mPid, nri.mUid,
                                 nrForCallback.getRequestorPackageName(),
                                 nri.mCallingAttributionTag));
                 break;
